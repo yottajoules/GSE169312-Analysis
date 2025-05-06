@@ -1,0 +1,211 @@
+---
+title: "GViz Diagrams"
+format: html
+editor: visual
+---
+
+# GViz Diagrams
+
+This code will generate GViz Diagrams for GOIs that we will discuss in the report
+
+## Libraries
+
+```{r}
+library(here)
+library(tidyverse)
+library(Gviz)
+library(ensembldb)
+library(AnnotationHub)
+library(ggthemes)
+library(scales)
+library(colorspace)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(crayon)
+```
+
+## Variables
+
+This chunk declares variables and imports relevant files/data
+
+```{r}
+ah <- AnnotationHub()
+query(ah,c("GTF","GRCm38"))
+
+DB <- ensDbFromAH(ah['AH87466'])
+GRCm38 <- EnsDb(DB)
+seqlevelsStyle(GRCm38) <- "UCSC"
+
+H3K27me3_wt <- BigWigFile(here('data','chipseq','GSM5195453_WT_H3K27me3.bw'))
+H3K27me3_cko <- BigWigFile(here('data','chipseq','GSM5195455_cKO_H3K27me3.bw'))
+H3K27ac_wt <- BigWigFile(here('data','chipseq','GSM5195452_WT_H3K27ac.bw'))
+H3K27ac_ko <- BigWigFile(here('data','chipseq','GSM5195454_cKO_H3K27ac.bw'))
+
+K27me3_wt_peaks <- import(here('data','chipseq','WT_H3K27me3_peaks.broadPeak'))
+seqlevelsStyle(K27me3_wt_peaks) <- "UCSC"
+K27me3_cko_peaks <- import(here('data','chipseq','cKO_H3K27me3_peaks.broadPeak'))
+seqlevelsStyle(K27me3_cko_peaks) <- "UCSC"
+K27ac_wt_peaks <- import(here('data','chipseq','WT_H3K27ac_peaks.broadPeak'))
+seqlevelsStyle(K27ac_wt_peaks) <- "UCSC"
+K27ac_cko_peaks <- import(here('data','chipseq','cKO_H3K27ac_peaks.broadPeak'))
+seqlevelsStyle(K27ac_cko_peaks) <- "UCSC"
+
+my_palette <- tableau_color_pal(palette='Color Blind')(8)
+my_palette <- desaturate(my_palette,.3)
+my_palette <- darken(desaturate(colorblind_pal()(8),0.5),0.2)[2:8]
+
+mm10_bands <- ah[['AH53180']] |> 
+  as_tibble() |>
+  dplyr::rename('chrom'='seqnames',
+                'chromStart'='start',
+                'chromEnd'='end')
+
+IdeogramTrack <- function(chr) {
+    Gviz::IdeogramTrack(as.character(chr),genome='mm10',bands=mm10_bands)
+  }
+
+```
+
+## Visualisation
+
+This part is separated into 2 list of genes, one for each of the biological process we have decided to investigate
+
+### Muscle system process
+
+```{r}
+#GOI
+goi_vec <- c("Myh8", "Myh3", "Myog", "Myc")
+  #c("ENSMUSG00000030093", "ENSMUSG00000038203", "ENSMUSG00000022484", "ENSMUSG00000050368",  "ENSMUSG00000027168")
+#gene symbols: Hoxa13, Hoxc10, Hoxd10, Wnt7a, Pax6
+
+
+for (goi_sym in goi_vec){ #Generate a figure for each gene
+  GRCm38 <- dropFilter(GRCm38)
+  goi <- (bitr(goi_sym, fromType = "SYMBOL", toType = "ENSEMBL", OrgDb = org.Mm.eg.db))
+  goi <- goi$ENSEMBL
+  gr <- GenomicRanges::reduce(genes(GRCm38)[goi] + 5000)
+  print(blue(paste("Now Showing: ",  goi_sym, "\n")))
+  gr_filter <- GRangesFilter(gr)
+  GRCm38 <- addFilter(GRCm38, GRangesFilter(gr))
+  
+  k27me3_wt_track <- DataTrack(import.bw(H3K27me3_wt,which=gr)
+                               ,type='hist',window=-1,fill=my_palette[2],col.histogram=my_palette[2]
+                               ,ylim=c(0,25)
+                               ,background.title=my_palette[2]
+                               ,name="WT me3")
+  k27me3_ko_track <- DataTrack(import.bw(H3K27me3_cko,which=gr)
+                               ,type='hist',window=-1,fill=my_palette[3],col.histogram=my_palette[3]
+                               ,ylim=c(0,25)
+                               ,background.title=my_palette[3]
+                               ,name="cKO me3")
+  k27ac_wt_track <- DataTrack(import.bw(H3K27ac_wt,which=gr)
+                              ,type='hist',window=-1,fill=my_palette[4],col.histogram=my_palette[4]
+                              ,ylim=c(0,25)
+                              ,background.title=my_palette[4]
+                              ,name="WT ac")
+  k27ac_ko_track <- DataTrack(import.bw(H3K27ac_ko,which=gr)
+                              ,type='hist',window=-1,fill=my_palette[5],col.histogram=my_palette[5]
+                              ,ylim=c(0,25)
+                              ,background.title=my_palette[5]
+                              ,name="cKO ac")
+  
+  plotTracks(list(IdeogramTrack(seqnames(gr))
+    ,GenomeAxisTrack(gr)
+    ,AnnotationTrack(GenomicRanges::reduce(genes(GRCm38)[goi]),
+                    fill='gray',name='DEG',
+                    fontcolor.title='black')
+    ,GeneRegionTrack(getGeneRegionTrackForGviz(GRCm38),
+                    transcriptAnnotation='symbol',
+                    fill=my_palette[1],col=my_palette[1],col.line=NULL,
+                    min.height=4,
+                    background.title=my_palette[1],
+                    name="Ensembl")
+    ,k27me3_wt_track
+    ,AnnotationTrack(K27me3_wt_peaks,chr=as.character(seqnames(gr)),
+                     fill=my_palette[2],col=my_palette[2],background.title=my_palette[2])
+    ,k27me3_ko_track
+    ,AnnotationTrack(K27me3_cko_peaks,chr=as.character(seqnames(gr)),
+                     fill=my_palette[3],col=my_palette[3],background.title=my_palette[3])
+    ,k27ac_wt_track
+    ,AnnotationTrack(K27ac_wt_peaks,chr=as.character(seqnames(gr)),
+                    fill=my_palette[4],col=my_palette[4],
+                    background.title=my_palette[4])
+    ,k27ac_ko_track
+    ,AnnotationTrack(K27ac_cko_peaks,chr=as.character(seqnames(gr)),
+                     fill=my_palette[5],col=my_palette[5],background.title=my_palette[5])
+  )
+  ,from=start(gr),to=end(gr)
+    )
+
+}
+```
+
+### Cell fate commitment
+
+```{r}
+#GOI
+goi_vec <- c("Hoxa13", "Hoxc10", "Hoxd10", "Wnt7a", "Pax6")
+  #c("ENSMUSG00000030093", "ENSMUSG00000038203", "ENSMUSG00000022484", "ENSMUSG00000050368",  "ENSMUSG00000027168")
+#gene symbols: Hoxa13, Hoxc10, Hoxd10, Wnt7a, Pax6
+
+
+for (goi_sym in goi_vec){ #Generate a figure for each gene
+  GRCm38 <- dropFilter(GRCm38)
+  goi <- (bitr(goi_sym, fromType = "SYMBOL", toType = "ENSEMBL", OrgDb = org.Mm.eg.db))
+  goi <- goi$ENSEMBL
+  gr <- GenomicRanges::reduce(genes(GRCm38)[goi] + 5000)
+  print(blue(paste("Now Showing: ",  goi_sym, "\n")))
+  gr_filter <- GRangesFilter(gr)
+  GRCm38 <- addFilter(GRCm38, GRangesFilter(gr))
+  
+  k27me3_wt_track <- DataTrack(import.bw(H3K27me3_wt,which=gr)
+                               ,type='hist',window=-1,fill=my_palette[2],col.histogram=my_palette[2]
+                               ,ylim=c(0,25)
+                               ,background.title=my_palette[2]
+                               ,name="WT me3")
+  k27me3_ko_track <- DataTrack(import.bw(H3K27me3_cko,which=gr)
+                               ,type='hist',window=-1,fill=my_palette[3],col.histogram=my_palette[3]
+                               ,ylim=c(0,25)
+                               ,background.title=my_palette[3]
+                               ,name="cKO me3")
+  k27ac_wt_track <- DataTrack(import.bw(H3K27ac_wt,which=gr)
+                              ,type='hist',window=-1,fill=my_palette[4],col.histogram=my_palette[4]
+                              ,ylim=c(0,25)
+                              ,background.title=my_palette[4]
+                              ,name="WT ac")
+  k27ac_ko_track <- DataTrack(import.bw(H3K27ac_ko,which=gr)
+                              ,type='hist',window=-1,fill=my_palette[5],col.histogram=my_palette[5]
+                              ,ylim=c(0,25)
+                              ,background.title=my_palette[5]
+                              ,name="cKO ac")
+  
+  plotTracks(list(IdeogramTrack(seqnames(gr))
+    ,GenomeAxisTrack(gr)
+    ,AnnotationTrack(GenomicRanges::reduce(genes(GRCm38)[goi]),
+                    fill='gray',name='DEG',
+                    fontcolor.title='black')
+    ,GeneRegionTrack(getGeneRegionTrackForGviz(GRCm38),
+                    transcriptAnnotation='symbol',
+                    fill=my_palette[1],col=my_palette[1],col.line=NULL,
+                    min.height=4,
+                    background.title=my_palette[1],
+                    name="Ensembl")
+    ,k27me3_wt_track
+    ,AnnotationTrack(K27me3_wt_peaks,chr=as.character(seqnames(gr)),
+                     fill=my_palette[2],col=my_palette[2],background.title=my_palette[2])
+    ,k27me3_ko_track
+    ,AnnotationTrack(K27me3_cko_peaks,chr=as.character(seqnames(gr)),
+                     fill=my_palette[3],col=my_palette[3],background.title=my_palette[3])
+    ,k27ac_wt_track
+    ,AnnotationTrack(K27ac_wt_peaks,chr=as.character(seqnames(gr)),
+                    fill=my_palette[4],col=my_palette[4],
+                    background.title=my_palette[4])
+    ,k27ac_ko_track
+    ,AnnotationTrack(K27ac_cko_peaks,chr=as.character(seqnames(gr)),
+                     fill=my_palette[5],col=my_palette[5],background.title=my_palette[5])
+  )
+  ,from=start(gr),to=end(gr)
+    )
+
+}
+```

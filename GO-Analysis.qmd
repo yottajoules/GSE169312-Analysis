@@ -1,0 +1,145 @@
+---
+title: "GO-Analysis"
+format: html
+editor: visual
+---
+
+# Enrichment Analysis
+
+Find pathways that are overrepresented in dataset
+
+## Libraries
+
+For this, we will be using `clusterProfiler`
+
+```{r}
+#BiocManager::install(c("clusterProfiler", "org.Mm.eg.db", "AnnotationDbi", "BiocGenerics"))
+#BiocManager::install("TxDb.Mmusculus.UCSC.mm10.ensGene")
+
+library(TxDb.Mmusculus.UCSC.mm10.ensGene)
+library(clusterProfiler)
+library(org.Mm.eg.db)  #mouse
+library(dplyr)
+library(here)
+library(tidyverse)
+library(conflicted)
+library(DESeq2)
+library(apeglm)
+library(ggthemes)
+conflicts_prefer(GenomicRanges::setdiff)
+#library(cowplot) 
+```
+
+## Prepare Dataset
+
+Several steps were lifted from EED-KD-DESeq2 provided from 11Apr Practical\
+
+1.  Generation of `res` using DESeq\
+2.  `res_df` adds `UP`, `DOWN` and `NC` using `logfoldchange`\
+3.  Final output `aug_res` which filters for only genes which are differentially expressed\
+
+```{r}
+counts <- 
+  read_tsv(here("data","GSE169312_ReadCount.txt.gz"),
+           col_types = "cnnnnnn") |>
+  mutate(ID=str_remove(ID, "\\..*")) |>
+  column_to_rownames("ID")
+
+colData <- tibble(ID=names(counts)) |>
+  separate(ID,into=c("genotype","replicate"),remove=FALSE) |>
+  mutate(genotype=str_sub(genotype,1,-2),
+         replicate=c(1:3,1:3),
+         genotype=as_factor(genotype),
+         genotype=fct_relevel(genotype,"WT")) |>
+  column_to_rownames("ID")
+
+
+rowRanges <- genes(TxDb.Mmusculus.UCSC.mm10.ensGene)
+valid_genes <- rowRanges[names(rowRanges) %in% rownames(counts)]
+counts <- counts[names(valid_genes),]
+
+dds <- DESeqDataSetFromMatrix(countData=round(counts),
+                       colData=colData,
+                       rowRanges=valid_genes,
+                       design = ~ genotype,
+                       tidy=FALSE)
+
+dds <- DESeq(dds)
+res <- lfcShrink(dds,2)
+head(res)
+
+min_lfc <- 1 
+max_padj <- 0.05
+
+res_df <- rownames_to_column(as.data.frame(res),"gene") |> #Full Table
+  as_tibble() |> 
+  mutate(deg=ifelse(padj< max_padj & log2FoldChange > min_lfc, "UP","NC"),
+         deg=ifelse(padj< max_padj & log2FoldChange < -min_lfc, "DOWN",deg),
+         deg=as_factor(deg),
+         deg=fct_relevel(deg,"NC"))
+
+aug_res <- arrange(res_df,padj) |>  #Table filtered for genes with change
+  dplyr::select(gene,log2FoldChange,padj,deg) |>
+  dplyr::filter(!is.na(padj))|>
+  dplyr::filter(deg!="NC")
+
+dplyr::filter(res_df,str_starts(gene,"ENSMUSG00000022346")) #can be used to search specific genes #Myc
+dplyr::filter(aug_res,str_starts(gene,"ENSMUSG00000030619")) #sanity check for EED
+```
+
+## Convert Ensembl ID to Entrez ID
+
+This step was done for compatibility with Gene Ontology
+
+```{r}
+ensembl_to_entrez <- bitr(aug_res$gene,
+                          fromType = "ENSEMBL",
+                          toType = "ENTREZID",
+                          OrgDb = org.Mm.eg.db)
+head(ensembl_to_entrez)
+
+```
+
+## Enrichment Analysis GO enrichment
+
+```{r}
+ego_all <- enrichGO(gene = ensembl_to_entrez$ENTREZID,
+                    OrgDb = org.Mm.eg.db,
+                    keyType = "ENTREZID",
+                    ont = "BP",
+                    pAdjustMethod = "BH",
+                    pvalueCutoff = 0.05,
+                    qvalueCutoff = 0.2)
+```
+
+Visualisation of Enrichment analysis
+
+```{r}
+
+dotplot(ego_all, x = "GeneRatio", showCategory = 10, font.size = 8)
+```
+
+## Find potential GOI
+
+For our report, decided to go with `muscle system process` and `cell fate commitment` This code below singles out these `categories` into `gene_list`
+
+```{r}
+gene_list <- list()
+
+for (category in c(1,6)){
+  cat_name <- ego_all$Description[category]
+  top_genes <- ego_all$geneID[category]|> 
+    strsplit("/") |> unlist()
+  
+  gene_annot <- bitr(top_genes,
+                     fromType = "ENTREZID",
+                     toType = c("SYMBOL", "ENSEMBL"),
+                     OrgDb = org.Mm.eg.db)
+  
+  gene_info <- left_join(gene_annot, aug_res, by = c("ENSEMBL" = "gene"))
+  gene_list[[cat_name]] <- gene_info
+  print(gene_info)
+  rm(gene_info)
+  rm(cat_name)
+}
+```
